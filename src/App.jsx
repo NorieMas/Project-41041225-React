@@ -3,164 +3,151 @@ import React, { useEffect, useRef, useState } from 'react'
 // Blockly
 import * as Blockly from 'blockly'
 import 'blockly/msg/en'
-import 'blockly/python' // 讓 Blockly 能產生 Python 程式碼
 import { pythonGenerator } from 'blockly/python'
 
 // Ace (直接從 ace-builds 來做原生用法)
-import 'ace-builds/src-min-noconflict/ace'
-import 'ace-builds/src-min-noconflict/mode-python'
-import 'ace-builds/src-min-noconflict/theme-monokai'
+import 'ace-builds/src-noconflict/ace'
+import 'ace-builds/src-noconflict/mode-python'
+// 淺色主題（也可改回 monokai）
+import 'ace-builds/src-noconflict/theme-chrome'
 
-// Skulpt (安裝後可直接 import，但它主要掛在 window.Sk)
-import 'skulpt' // or `import Sk from 'skulpt'` 但官方封裝常用全域 window.Sk
+// Skulpt
+import 'skulpt'
 
 export default function App() {
-  // Blockly 容器
-  const blocklyRef = useRef(null)
+  const blocklyRef = useRef(null)     // Blockly 容器
+  const workspaceRef = useRef(null)   // 避免重複初始化 workspace
 
-  // Ace Editor 容器
-  const aceRef = useRef(null)
+  const aceRef = useRef(null)         // Ace 容器
   const aceEditorInstance = useRef(null)
 
-  // Python 程式碼狀態
-  const [pythonCode, setPythonCode] = useState('print("Hello from Ace!")\n')
+  const [pythonCode, setPythonCode] = useState('print("Hello Ace!")\n')
 
-  const workspaceRef = useRef(null) // 用來存儲 workspace 實例
-
-  // 初始化 Blockly
+  // --------------------
+  // 1) 初始化 Blockly
+  // --------------------
   useEffect(() => {
-    // 如果已經有 workspace，就不要再建一次
-    if (workspaceRef.current) {
-      return
+    if (workspaceRef.current) return // 已初始化就略過
+    if (!blocklyRef.current) return  // DOM 尚未掛載
+
+    const workspace = Blockly.inject(blocklyRef.current, {
+      toolbox: `
+        <xml xmlns="https://developers.google.com/blockly/xml">
+          <block type="text_print"></block>
+          <block type="text"></block>
+          <block type="math_number"></block>
+        </xml>
+      `,
+      trashcan: true
+    })
+    workspaceRef.current = workspace
+
+    // 當積木變化時，產生 Python → setPythonCode
+    const handleChange = () => {
+      const code = pythonGenerator.workspaceToCode(workspace)
+      setPythonCode(code)
     }
-
-    if (blocklyRef.current) {
-      const workspace = Blockly.inject(blocklyRef.current, {
-        toolbox: `<xml>
-                    <block type="text_print"></block>
-                    <block type="text"></block>
-                    <block type="math_number"></block>
-                  </xml>`,
-        trashcan: true
-      })
-
-      workspaceRef.current = workspace
-
-      // 監聽積木變動
-      const handleChange = () => {
-        const code = pythonGenerator.workspaceToCode(workspace)
-        setPythonCode(code)
-      }
-      workspace.addChangeListener(handleChange)
-    }
+    workspace.addChangeListener(handleChange)
   }, [])
 
-  return (
-    <div style={{ display: 'flex' }}>
-      <div ref={blocklyRef} style={{ width: '50%', height: '100vh' }} />
-      <textarea
-        style={{ width: '50%', height: '100vh' }}
-        value={pythonCode}
-        onChange={() => {}}
-      />
-    </div>
-  )
-
-  // 初始化 Ace Editor
+  // --------------------
+  // 2) 初始化 Ace Editor
+  // --------------------
   useEffect(() => {
-    if (!aceRef.current) return
+    if (aceEditorInstance.current) return // 已初始化就略過
+    if (!aceRef.current) return           // DOM 尚未掛載
 
-    // 建立 Ace 編輯器
     const ace = window.ace.edit(aceRef.current, {
       mode: 'ace/mode/python',
-      theme: 'ace/theme/monokai',
+      theme: 'ace/theme/chrome',  // 如果想回深色，就改 'ace/theme/monokai'
       fontSize: 14,
       showPrintMargin: false
     })
-
-    // 初始內容
+    // 初始顯示
     ace.setValue(pythonCode, -1)
 
-    // 若想要監聽編輯器修改 -> 更新 pythonCode，
-    // 需在這裡對 Ace 的 onChange 事件做 setPythonCode(...)
+    // Ace 編輯器 → Python 程式碼 (單向同步)
     ace.on('change', () => {
-      // 這裡如果想做「Ace -> Blockly」的雙向同步就很複雜，示範只單向就好
       const currentCode = ace.getValue()
       setPythonCode(currentCode)
     })
 
-    // 存下 Ace 實例
     aceEditorInstance.current = ace
-
-    // Unmount 時銷毀
-    return () => {
-      ace.destroy()
-    }
   }, [])
 
-  // 如果外部(Blockly)的 pythonCode 有更新，也同步到 Ace 編輯器
+  // --------------------
+  // 3) pythonCode → Ace
+  // --------------------
   useEffect(() => {
-    if (aceEditorInstance.current) {
-      // 設定 Ace 的內容
-      const currentValue = aceEditorInstance.current.getValue()
-      if (currentValue !== pythonCode) {
-        aceEditorInstance.current.setValue(pythonCode, -1)
-      }
+    if (!aceEditorInstance.current) return
+
+    const ace = aceEditorInstance.current
+    const currentValue = ace.getValue()
+    if (currentValue !== pythonCode) {
+      ace.setValue(pythonCode, -1)
+      // 強制刷新 + 回到最上方（避免顯示空白）
+      ace.clearSelection()
+      ace.resize(true)
+      ace.renderer.updateFull()
+      ace.gotoLine(1, 0, true)
     }
   }, [pythonCode])
 
-  // 執行 Python
+  // --------------------
+  // 4) 執行 Python (Skulpt)
+  // --------------------
   const handleRunPython = async () => {
-    // 確認 Skulpt 是否存在
     if (!window.Sk) {
-      alert('Skulpt not loaded!')
+      console.error('Skulpt not loaded!')
       return
     }
 
-    // 配置輸出
-    const outf = (text) => {
-      // 這裡可以做更好的輸出處理，例如串到 UI
-      console.log('Skulpt output:', text)
-    }
-
     window.Sk.configure({
-      output: outf,
+      output: (text) => console.log('Skulpt output:', text),
       read: (file) => {
-        if (window.Sk.builtinFiles === undefined ||
-            window.Sk.builtinFiles['files'][file] === undefined) {
-          throw new Error(`File not found: '${file}'`)
+        if (!window.Sk.builtinFiles?.files[file]) {
+          throw new Error(`File not found: ${file}`)
         }
-        return window.Sk.builtinFiles['files'][file]
+        return window.Sk.builtinFiles.files[file]
       }
     })
 
     try {
-      // 非同步方式執行
       await window.Sk.misceval.asyncToPromise(() =>
         window.Sk.importMainWithBody('<stdin>', false, pythonCode, true)
       )
       console.log('Execution finished.')
     } catch (err) {
-      console.error('Skulpt error:', err.toString())
+      console.error('Skulpt error:', err)
     }
   }
 
+  // --------------------
+  // 5) JSX 佈局
+  // --------------------
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
-      {/* 左半邊: Blockly */}
+      {/* 左半邊：Blockly */}
       <div
         ref={blocklyRef}
-        style={{ width: '50%', height: '100%', border: '1px solid #ccc' }}
+        style={{
+          width: '50%',
+          height: '100%',
+          border: '1px solid #ccc'
+        }}
       />
 
-      {/* 右半邊: Ace Editor + 按鈕 */}
-      <div style={{ width: '50%', display: 'flex', flexDirection: 'column' }}>
+      {/* 右半邊：Ace Editor + 按鈕 */}
+      <div style={{ width: '50%', display: 'flex', flexDirection: 'column', height: '100%' }}>
         <div
           ref={aceRef}
-          style={{ flex: 1, border: '1px solid #ccc' }}
+          style={{
+            flex: 1,
+            border: '1px solid #ccc'
+          }}
         />
         <button onClick={handleRunPython} style={{ height: '60px' }}>
-          Run Python (Skulpt)
+          Run Python
         </button>
       </div>
     </div>
